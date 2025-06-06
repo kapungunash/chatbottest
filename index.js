@@ -414,26 +414,32 @@ async function sendCategoryList(to) {
     });
   }
 
-  const payload = {
-    messaging_product: 'whatsapp',
-    to,
-    type: 'interactive',
-    interactive: {
-      type: 'list',
-      header: { type: 'text', text: 'Choose a Category' },
-      body:   { text: 'Step 4/5: Select one category from the list below.' },
-      footer: { text: '' },
-      action: {
-        button: 'Select Category',
-        sections: [
-          {
-            title: 'Categories',
-            rows
-          }
-        ]
-      }
+ // Split into two sections:
+ const sectionA = {
+  title: 'Categories 1–10',
+  rows: rows.slice(0, 10)   // rows 0 through 9 (IDs "1"–"10")
+};
+
+const sectionB = {
+  title: 'Categories 11–15',
+  rows: rows.slice(10, 15)  // rows 10 through 14 (IDs "11"–"15")
+};
+
+const payload = {
+  messaging_product: 'whatsapp',
+  to,
+  type: 'interactive',
+  interactive: {
+    type: 'list',
+    header: { type: 'text', text: 'Choose a Category' },
+    body:   { text: 'Step 4/5: Select one category from the list below.' },
+    footer: { text: '' },
+    action: {
+      button: 'Select Category',
+      sections: [sectionA, sectionB]
     }
-  };
+  }
+};
 
   try {
     await axios.post(WH_API_BASE, payload, {
