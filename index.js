@@ -22,6 +22,12 @@ const WH_API_BASE = `https://graph.facebook.com/v15.0/${PHONE_NUMBER_ID}/message
 // ─── Express Setup ───────────────────────────────────────────────────────────
 const app = express();
 app.use(bodyParser.json());
+//Optional: a simple home route so "/" doesn’t 404
+app.get('/', (req, res) => {
+  res.send('🤖 WhatsApp bot is running. Webhook endpoint is /webhook');
+});
+
+app.use(bodyParser.json());
 
 // ─── 1) Webhook Verification (GET) ───────────────────────────────────────────
 // This endpoint is used by Facebook/Meta to verify your webhook.
