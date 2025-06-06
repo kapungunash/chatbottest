@@ -1,11 +1,14 @@
 // index.js
 
 require('dotenv').config();
-const express = require('express');
+const express    = require('express');
 const bodyParser = require('body-parser');
-const axios = require('axios');
+const axios      = require('axios');
+
+// ─── In-memory state ───────────────────────────────────────────────────────────
 const userStates = {};  
-// ─── Environment Variables ─────────────────────────────────────────────────
+
+// ─── Environment Variables ─────────────────────────────────────────────────────
 const PORT             = process.env.PORT || 3000;
 const TOKEN            = process.env.TOKEN;            // Your Business API access token
 const PHONE_NUMBER_ID  = process.env.PHONE_NUMBER_ID;  // Your Phone Number ID from Meta
@@ -17,24 +20,23 @@ if (!TOKEN || !PHONE_NUMBER_ID || !VERIFY_TOKEN) {
 }
 
 // Base URL for sending messages via the WhatsApp Business Cloud API
-const WH_API_BASE = `https://graph.facebook.com/v15.0/${PHONE_NUMBER_ID}/messages`;
+const WH_API_BASE = `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`; // updated to v23.0
 
 // ─── Express Setup ───────────────────────────────────────────────────────────
 const app = express();
 app.use(bodyParser.json());
-//Optional: a simple home route so "/" doesn’t 404
+
+// Optional: a simple home route so "/" doesn’t 404
 app.get('/', (req, res) => {
   res.send('🤖 WhatsApp bot is running. Webhook endpoint is /webhook');
 });
 
-app.use(bodyParser.json());
-
 // ─── 1) Webhook Verification (GET) ───────────────────────────────────────────
 // This endpoint is used by Facebook/Meta to verify your webhook.
 app.get('/webhook', (req, res) => {
-  const mode       = req.query['hub.mode'];
-  const token      = req.query['hub.verify_token'];
-  const challenge  = req.query['hub.challenge'];
+  const mode      = req.query['hub.mode'];
+  const token     = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
 
   if (mode === 'subscribe' && token === VERIFY_TOKEN) {
     console.log('✅ WEBHOOK_VERIFIED');
@@ -67,19 +69,42 @@ app.post('/webhook', async (req, res) => {
             Array.isArray(change.value.messages)
           ) {
             for (const message of change.value.messages) {
-              const from = message.from;              // sender’s WhatsApp ID (e.g. “2637712345678”)
-              const msgBody = message.text?.body;     // text of the message, if any
-              const messageType = message.type;       // “text”, “button”, “interactive”, etc.
+              const from        = message.from;       
+              const messageType = message.type;     
 
-              console.log(`📩 Received message from ${from}:`, messageType, msgBody);
-
-              // Handle only text messages to keep this example simple
+              // 1) If it’s a plain-text message
               if (messageType === 'text') {
-                await handleIncomingText(from, msgBody);
+                const msgBody = message.text.body;
+                console.log(`📩 Received text from ${from}:`, msgBody);
+                await handleIncomingText(from, msgBody.trim().toLowerCase());
+                continue;
               }
 
-              // You could also detect “interactive” responses here:
-              // if (messageType === 'interactive') { /* interactive handling */ }
+              // 2) If it’s an interactive reply (list or button)
+              if (messageType === 'interactive') {
+                // message.interactive.list_reply.id   (if list item tapped)
+                // message.interactive.button_reply.id (if button tapped)
+                const interactive = message.interactive;
+                let replyId = null;
+
+                if (interactive.list_reply) {
+                  replyId = interactive.list_reply.id;   // e.g. "customer_relations"
+                } else if (interactive.button_reply) {
+                  replyId = interactive.button_reply.id; // e.g. "confirm_yes"
+                }
+
+                console.log(`📩 Received interactive from ${from}:`, replyId);
+                if (replyId) {
+                  await handleInteractiveReply(from, replyId);
+                } else {
+                  await sendTextMessage(from, 'Sorry, I didn’t understand that selection. Type “menu” to start over.');
+                }
+                continue;
+              }
+
+              // 3) Any other message types
+              console.log(`📩 Received unsupported message type (${messageType}) from ${from}.`);
+              await sendTextMessage(from, 'Sorry, I can only process text or menu selections right now.');
             }
           }
         }
@@ -99,26 +124,27 @@ app.post('/webhook', async (req, res) => {
 
 // ─── 3) Handle Incoming Text ─────────────────────────────────────────────────
 async function handleIncomingText(from, text) {
-  text = text.trim().toLowerCase();
+  // text is already trimmed and lowercased
 
-  // If user requests “menu” or “hello”, send the main interactive list
+  // If user requests “menu” or “hello” or “hi”, send the main interactive list
   if (text === 'menu' || text === 'hello' || text === 'hi') {
+    delete userStates[from];
     return sendMainMenu(from);
   }
 
-  // If user says “1” or “customer relations” (fallback), start that flow
+  // If user says “1” or “customer relations”, start that flow
   if (text === '1' || text.includes('customer relations')) {
     userStates[from] = { submenu: 'customer_relations' };
     return sendCustomerRelationsMenu(from);
   }
 
-  // If user says “2” or “billing” (fallback), start billing flow
+  // If user says “2” or “billing”, start billing flow
   if (text === '2' || text.includes('billing')) {
     userStates[from] = { step: 1, process: 'billing_enquiry' };
     return sendTextMessage(from, 'Please enter your account number:');
   }
 
-  // If user is already in a flow, forward to the appropriate handler
+  // If user is already in a multi-step flow, forward to the appropriate handler
   if (userStates[from]?.step) {
     const { process } = userStates[from];
     switch (process) {
@@ -135,11 +161,83 @@ async function handleIncomingText(from, text) {
     }
   }
 
-  // Fallback: user typed something we didn’t recognize
+  // Fallback: user typed something not recognized
   return sendTextMessage(from, 'Sorry, I didn’t understand. Type “menu” to see options.');
 }
 
-// ─── 4) Send a Simple Text Message ──────────────────────────────────────────
+// ─── 4) Handle Interactive Replies (List/Buttons) ────────────────────────────
+async function handleInteractiveReply(from, replyId) {
+  switch (replyId) {
+    // ─── Main Menu Selections ───────────────────────────────────────────────
+    case 'customer_relations':
+      userStates[from] = { submenu: 'customer_relations' };
+      return sendCustomerRelationsMenu(from);
+
+    case 'billing':
+      userStates[from] = { step: 1, process: 'billing_enquiry' };
+      return sendTextMessage(from, 'Please enter your account number:');
+
+    case 'service_requests':
+      userStates[from] = { step: 1, process: 'service_requests' };
+      return sendTextMessage(from, 'Please describe your service request:');
+
+    case 'faqs':
+      return sendTextMessage(from, 'You asked for FAQs. Visit: https://ruwalocalboard.co.zw/faqs');
+
+    case 'live_agent':
+      return sendTextMessage(from, 'Connecting you to a live agent…');
+
+    // ─── Customer Relations Sub-Menu ────────────────────────────────────────
+    case 'log_query':
+      userStates[from] = { step: 1, process: 'query' };
+      return sendTextMessage(from, 'Step 1/5: Enter your full name:');
+
+    case 'submit_complaint':
+      userStates[from] = { step: 1, process: 'complaint' };
+      return sendTextMessage(from, 'Step 1/3: Enter your full name:');
+
+    case 'make_suggestion':
+      userStates[from] = { step: 1, process: 'suggestion' };
+      return sendTextMessage(from, 'Step 1/3: Enter your full name:');
+
+    case 'back_main':
+      delete userStates[from];
+      return sendMainMenu(from);
+
+    // ─── Confirmation Buttons ───────────────────────────────────────────────
+    case 'confirm_yes':
+      if (userStates[from]?.process === 'query') {
+        return finalizeQuerySubmission(from);
+      }
+      if (userStates[from]?.process === 'complaint') {
+        // handleComplaintFlow will already log the complaint on step 3
+        return sendTextMessage(from, '✅ Complaint confirmed and logged.');
+      }
+      if (userStates[from]?.process === 'suggestion') {
+        return sendTextMessage(from, '✅ Suggestion confirmed and logged.');
+      }
+      return;
+
+    case 'confirm_no':
+      delete userStates[from];
+      return sendTextMessage(from, 'Your submission was cancelled. Type “menu” to start over.');
+
+    // ─── PDF Buttons in Billing Flow ───────────────────────────────────────
+    case 'pdf_yes':
+      // Implement PDF generation/sending here
+      return sendTextMessage(from, 'Sure—your PDF is being generated. Please wait a moment.');
+
+    case 'pdf_no':
+      delete userStates[from];
+      return sendTextMessage(from, 'Okay! If you need anything else, type “menu.”');
+
+    // ─── Default Fallback for Unknown Interactive IDs ──────────────────────
+    default:
+      return sendTextMessage(from, 'Sorry, I didn’t understand that choice. Type “menu” to start over.');
+  }
+}
+
+// ─── 5) Send a Simple Text Message ──────────────────────────────────────────
 async function sendTextMessage(to, body) {
   const payload = {
     messaging_product: 'whatsapp',
@@ -150,7 +248,7 @@ async function sendTextMessage(to, body) {
   try {
     await axios.post(WH_API_BASE, payload, {
       headers: {
-        'Authorization': `Bearer ${TOKEN}`,
+        Authorization: `Bearer ${TOKEN}`,
         'Content-Type': 'application/json'
       }
     });
@@ -160,12 +258,12 @@ async function sendTextMessage(to, body) {
   }
 }
 
-// ─── 5) Send the Main Interactive List ──────────────────────────────────────
+// ─── 6) Send the Main Interactive List ──────────────────────────────────────
 async function sendMainMenu(to) {
   const payload = {
     messaging_product: 'whatsapp',
     to,
-    type: 'interactive',           // <— add this
+    type: 'interactive',
     interactive: {
       type: 'list',
       header: { type: 'text', text: 'Ruwa Local Board Services' },
@@ -197,7 +295,7 @@ async function sendMainMenu(to) {
   try {
     await axios.post(WH_API_BASE, payload, {
       headers: {
-        'Authorization': `Bearer ${TOKEN}`,
+        Authorization: `Bearer ${TOKEN}`,
         'Content-Type': 'application/json'
       }
     });
@@ -206,12 +304,13 @@ async function sendMainMenu(to) {
     console.error('❌ Error sending main menu:', err.response?.data || err.message);
   }
 }
-// ─── 6) Send Customer Relations Sub‐Menu ────────────────────────────────────
+
+// ─── 7) Send Customer Relations Sub-Menu ────────────────────────────────────
 async function sendCustomerRelationsMenu(to) {
   const payload = {
     messaging_product: 'whatsapp',
     to,
-    type: 'interactive',           // <— add this
+    type: 'interactive',
     interactive: {
       type: 'list',
       header: { type: 'text', text: 'Customer Relations' },
@@ -242,7 +341,7 @@ async function sendCustomerRelationsMenu(to) {
   try {
     await axios.post(WH_API_BASE, payload, {
       headers: {
-        'Authorization': `Bearer ${TOKEN}`,
+        Authorization: `Bearer ${TOKEN}`,
         'Content-Type': 'application/json'
       }
     });
@@ -251,16 +350,6 @@ async function sendCustomerRelationsMenu(to) {
     console.error('❌ Error sending customer menu:', err.response?.data || err.message);
   }
 }
-// ─── 7) In‐Memory State for Each User ────────────────────────────────────────
-/**
- * Structure:
- * userStates[from] = {
- *   submenu: 'customer_relations'         // if in that sub‐menu
- *   step: <number>,                       // which step of a multi‐step flow
- *   process: 'query' | 'complaint' | 'suggestion' | 'billing_enquiry',
- *   // plus any interim data (e.g. fullName, address, email, category, etc.)
- * }
- */
 
 // ─── 8) Query Flow (5 steps + confirmation) ─────────────────────────────────
 async function handleQueryFlow(from, text) {
@@ -349,12 +438,11 @@ async function sendConfirmationButtons(to) {
   try {
     await axios.post(WH_API_BASE, payload, {
       headers: {
-        'Authorization': `Bearer ${TOKEN}`,
+        Authorization: `Bearer ${TOKEN}`,
         'Content-Type': 'application/json'
       }
     });
     console.log(`✅ Sent confirmation buttons to ${to}`);
-    // Mark step=6 so that when “confirm_yes” arrives, we finalize
     userStates[to].step = 6;
   } catch (err) {
     console.error('❌ Error sending confirmation buttons:', err.response?.data || err.message);
@@ -362,11 +450,11 @@ async function sendConfirmationButtons(to) {
 }
 
 async function finalizeQuerySubmission(from) {
-  const state = userStates[from];
+  const state   = userStates[from];
   const queryId = generateQueryId();
 
   try {
-    // 1) Insert into DB
+    // 1) Insert into DB (assuming pool is defined elsewhere)
     const [insertResult] = await pool.query(
       `INSERT INTO queries 
          (full_name, address, email, category_id, description, query_id, status, created_at, updated_at)
@@ -410,7 +498,7 @@ async function finalizeQuerySubmission(from) {
         [newQueryPK, assignedStaff.id]
       );
 
-      // 5) Send email to staff
+      // 5) Send email to staff (assuming sendEmail is defined)
       const htmlBody = `
         <p>Hello ${assignedStaff.name},</p>
         <p>A new query (<strong>${queryId}</strong>) has been assigned to you:</p>
@@ -425,7 +513,8 @@ async function finalizeQuerySubmission(from) {
       await sendEmail(assignedStaff.email, `New Query Assigned: ${queryId}`, htmlBody);
 
       // 6) Reply back to user on WhatsApp
-      await sendTextMessage(from,
+      await sendTextMessage(
+        from,
         `✅ Query Successfully Logged\nYour Query ID is *${queryId}*.\n\n` +
         `It has been assigned to ${assignedStaff.name}. They will reach out soon.`
       );
@@ -604,21 +693,15 @@ async function handleBillingFlow(from, text) {
             footer: { text: '' },
             action: {
               buttons: [
-                {
-                  type: 'reply',
-                  reply: { id: 'pdf_yes', title: 'Yes, send PDF' }
-                },
-                {
-                  type: 'reply',
-                  reply: { id: 'pdf_no', title: 'No thanks' }
-                }
+                { type: 'reply', reply: { id: 'pdf_yes', title: 'Yes, send PDF' } },
+                { type: 'reply', reply: { id: 'pdf_no',  title: 'No thanks' } }
               ]
             }
           }
         };
         await axios.post(WH_API_BASE, PDF_BUTTONS, {
           headers: {
-            'Authorization': `Bearer ${TOKEN}`,
+            Authorization: `Bearer ${TOKEN}`,
             'Content-Type': 'application/json'
           }
         });
@@ -676,13 +759,9 @@ function logSuggestion(suggestion) {
 }
 
 // ─── Start Express Server & Graceful Shutdown ──────────────────────────────
-async function startClient() {
-  app.listen(PORT, () => {
-    console.log(`🚀 Server is listening on http://localhost:${PORT}`);
-  });
-}
-
-startClient();
+app.listen(PORT, () => {
+  console.log(`🚀 Server is listening on http://localhost:${PORT}`);
+});
 
 process.on('SIGINT', async () => {
   console.log('🛑 Shutting down gracefully…');
