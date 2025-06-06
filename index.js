@@ -1,28 +1,20 @@
 // index.js
 
 require('dotenv').config();
-
-
-
-const qs = require('querystring'); 
-
-const PORTAL_LOGIN_URL       = 'https://portal.ruwalocalboard.co.zw/data/login2.php';
-const PORTAL_API_URL         = 'https://portal.ruwalocalboard.co.zw/api.php';
-const PDF_STATEMENT_URL_BASE = 'https://portal.ruwalocalboard.co.zw/stat/statement.php?id=';
-
-
 const express    = require('express');
 const bodyParser = require('body-parser');
 const axios      = require('axios');
+const qs         = require('querystring');
+const mysql      = require('mysql2/promise');
+const nodemailer = require('nodemailer');
 
+// ─── In‐Memory State ──────────────────────────────────────────────────────────
+const userStates = {};
 
-// ─── In-memory state ───────────────────────────────────────────────────────────
-const userStates = {};  
-
-// ─── Environment Variables ─────────────────────────────────────────────────────
+// ─── Environment Variables ───────────────────────────────────────────────────
 const PORT             = process.env.PORT || 3000;
-const TOKEN            = process.env.TOKEN;            // Your Business API access token
-const PHONE_NUMBER_ID  = process.env.PHONE_NUMBER_ID;  // Your Phone Number ID from Meta
+const TOKEN            = process.env.TOKEN;            // WhatsApp Cloud API token
+const PHONE_NUMBER_ID  = process.env.PHONE_NUMBER_ID;  // Phone Number ID from Meta
 const VERIFY_TOKEN     = process.env.VERIFY_TOKEN;     // Your webhook verify token
 
 if (!TOKEN || !PHONE_NUMBER_ID || !VERIFY_TOKEN) {
@@ -31,7 +23,49 @@ if (!TOKEN || !PHONE_NUMBER_ID || !VERIFY_TOKEN) {
 }
 
 // Base URL for sending messages via the WhatsApp Business Cloud API
-const WH_API_BASE = `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`; // updated to v23.0
+const WH_API_BASE = `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
+
+// ─── MySQL Pool Configuration ────────────────────────────────────────────────
+// Using your hosting server’s credentials and remote host
+const pool = mysql.createPool({
+  host: 'vkglobalhost.co.uk',   // Public hostname for MySQL
+  port: 3306,                   // MariaDB default port
+  user: 'portaladmin',
+  password: 'panashe@03',
+  database: 'PortalRuwa',
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+});
+
+// ─── Nodemailer (Email) Configuration ────────────────────────────────────────
+const mailer = nodemailer.createTransport({
+  host: 'smtp.ruwalocalboard.co.zw',
+  port: 465,
+  secure: true,
+  auth: {
+    user: 'pkapungu@ruwalocalboard.co.zw',
+    pass: 'Panashegift'
+  },
+  tls: {
+    rejectUnauthorized: false
+  }
+});
+
+// Email helper
+async function sendEmail(to, subject, html) {
+  return mailer.sendMail({
+    from: '"Ruwa Local Board" <pkapungu@ruwalocalboard.co.zw>',
+    to,
+    subject,
+    html
+  });
+}
+
+// ─── Constants for Billing Flow ──────────────────────────────────────────────
+const PORTAL_LOGIN_URL       = 'https://portal.ruwalocalboard.co.zw/data/login2.php';
+const PORTAL_API_URL         = 'https://portal.ruwalocalboard.co.zw/api.php';
+const PDF_STATEMENT_URL_BASE = 'https://portal.ruwalocalboard.co.zw/stat/statement.php?id=';
 
 // ─── Express Setup ───────────────────────────────────────────────────────────
 const app = express();
@@ -64,7 +98,7 @@ app.post('/webhook', async (req, res) => {
   try {
     const body = req.body;
 
-    // Check that this is a message event
+    // Check that this is a WhatsApp message event
     if (
       body.object &&
       body.entry &&
@@ -83,7 +117,7 @@ app.post('/webhook', async (req, res) => {
               const from        = message.from;       
               const messageType = message.type;     
 
-              // 1) If it’s a plain-text message
+              // 1) Plain‐text flows
               if (messageType === 'text') {
                 const msgBody = message.text.body;
                 console.log(`📩 Received text from ${from}:`, msgBody);
@@ -91,17 +125,15 @@ app.post('/webhook', async (req, res) => {
                 continue;
               }
 
-              // 2) If it’s an interactive reply (list or button)
+              // 2) Interactive replies (list or button)
               if (messageType === 'interactive') {
-                // message.interactive.list_reply.id   (if list item tapped)
-                // message.interactive.button_reply.id (if button tapped)
                 const interactive = message.interactive;
                 let replyId = null;
 
                 if (interactive.list_reply) {
-                  replyId = interactive.list_reply.id;   // e.g. "customer_relations"
+                  replyId = interactive.list_reply.id;
                 } else if (interactive.button_reply) {
-                  replyId = interactive.button_reply.id; // e.g. "confirm_yes"
+                  replyId = interactive.button_reply.id;
                 }
 
                 console.log(`📩 Received interactive from ${from}:`, replyId);
@@ -113,7 +145,7 @@ app.post('/webhook', async (req, res) => {
                 continue;
               }
 
-              // 3) Any other message types
+              // 3) Unsupported types
               console.log(`📩 Received unsupported message type (${messageType}) from ${from}.`);
               await sendTextMessage(from, 'Sorry, I can only process text or menu selections right now.');
             }
@@ -121,7 +153,6 @@ app.post('/webhook', async (req, res) => {
         }
       }
 
-      // Return a 200 OK to Meta immediately
       return res.sendStatus(200);
     } else {
       // Not a message event; just return 200
@@ -198,7 +229,7 @@ async function handleInteractiveReply(from, replyId) {
     case 'live_agent':
       return sendTextMessage(from, 'Connecting you to a live agent…');
 
-    // ─── Customer Relations Sub-Menu ────────────────────────────────────────
+    // ─── Customer Relations Sub‐Menu ────────────────────────────────────────
     case 'log_query':
       userStates[from] = { step: 1, process: 'query' };
       return sendTextMessage(from, 'Step 1/5: Enter your full name:');
@@ -221,7 +252,6 @@ async function handleInteractiveReply(from, replyId) {
         return finalizeQuerySubmission(from);
       }
       if (userStates[from]?.process === 'complaint') {
-        // handleComplaintFlow will already log the complaint on step 3
         return sendTextMessage(from, '✅ Complaint confirmed and logged.');
       }
       if (userStates[from]?.process === 'suggestion') {
@@ -235,16 +265,28 @@ async function handleInteractiveReply(from, replyId) {
 
     // ─── PDF Buttons in Billing Flow ───────────────────────────────────────
     case 'pdf_yes':
-      // Implement PDF generation/sending here
-      return sendTextMessage(from, 'Sure—your PDF is being generated. Please wait a moment.');
+      {
+        const state = userStates[from];
+        const pdfUrl = `${PDF_STATEMENT_URL_BASE}${state.account}`;
+        return sendTextMessage(from, `Here is your PDF statement:\n${pdfUrl}`);
+      }
 
     case 'pdf_no':
       delete userStates[from];
       return sendTextMessage(from, 'Okay! If you need anything else, type “menu.”');
 
-    // ─── Default Fallback for Unknown Interactive IDs ──────────────────────
+    // ─── Category Selection from sendCategoryList ──────────────────────────
     default:
-      return sendTextMessage(from, 'Sorry, I didn’t understand that choice. Type “menu” to start over.');
+      {
+        const num = parseInt(replyId, 10);
+        if (!isNaN(num) && num >= 1 && num <= 15 && userStates[from]?.step === 4) {
+          userStates[from].category = num;
+          userStates[from].step = 5;
+          return sendTextMessage(from, 'Step 5/5: Enter your query description:');
+        }
+        // Otherwise, unknown interactive ID
+        return sendTextMessage(from, 'Sorry, I didn’t understand that choice. Type “menu” to start over.');
+      }
   }
 }
 
@@ -316,7 +358,7 @@ async function sendMainMenu(to) {
   }
 }
 
-// ─── 7) Send Customer Relations Sub-Menu ────────────────────────────────────
+// ─── 7) Send Customer Relations Sub‐Menu ────────────────────────────────────
 async function sendCustomerRelationsMenu(to) {
   const payload = {
     messaging_product: 'whatsapp',
@@ -362,7 +404,51 @@ async function sendCustomerRelationsMenu(to) {
   }
 }
 
-// ─── 8) Query Flow (5 steps + confirmation) ─────────────────────────────────
+// ─── 8) Send Category List for Queries ──────────────────────────────────────
+async function sendCategoryList(to) {
+  const rows = [];
+  for (let i = 1; i <= 15; i++) {
+    rows.push({
+      id: String(i),
+      title: getCategoryName(i)
+    });
+  }
+
+  const payload = {
+    messaging_product: 'whatsapp',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      header: { type: 'text', text: 'Choose a Category' },
+      body:   { text: 'Step 4/5: Select one category from the list below.' },
+      footer: { text: '' },
+      action: {
+        button: 'Select Category',
+        sections: [
+          {
+            title: 'Categories',
+            rows
+          }
+        ]
+      }
+    }
+  };
+
+  try {
+    await axios.post(WH_API_BASE, payload, {
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    console.log(`✅ Sent category list to ${to}`);
+  } catch (err) {
+    console.error('❌ Error sending category list:', err.response?.data || err.message);
+  }
+}
+
+// ─── 9) Query Flow (5 steps + confirmation) ─────────────────────────────────
 async function handleQueryFlow(from, text) {
   const state = userStates[from];
 
@@ -380,28 +466,15 @@ async function handleQueryFlow(from, text) {
     case 3:
       state.email = text;
       state.step = 4;
-      return sendTextMessage(
-        from,
-        'Step 4/5: Choose a category by number:\n' +
-        '1. Grave (Cemetery)\n2. Water Services\n3. Development Permit Processing\n4. Rates Clearance\n' +
-        '5. Payment of Supplier Creditors\n6. Debt Collection\n7. Health Services at Clinics\n' +
-        '8. Lease Extension Agreements\n9. Tariffs\n10. Meter Reading\n11. Sewer Services\n' +
-        '12. Building Inspectorate\n13. Roads Management\n14. Public Relations Services\n15. Transport Management\n\n' +
-        'Reply with the number (1–15).'
-      );
+      return sendCategoryList(from);
 
     case 4:
-      const catNum = parseInt(text, 10);
-      if (isNaN(catNum) || catNum < 1 || catNum > 15) {
-        return sendTextMessage(from, 'Invalid category number. Reply 1–15.');
-      }
-      state.category = catNum;
-      state.step = 5;
-      return sendTextMessage(from, 'Step 5/5: Enter your query description:');
+      // Handled via interactive list in handleInteractiveReply
+      return sendTextMessage(from, 'Please select a category from the list.');
 
     case 5:
       state.query = text;
-      // Show summary first
+      // Show summary and send confirm buttons
       await sendTextMessage(
         from,
         `Name: ${state.fullName}\n` +
@@ -410,11 +483,9 @@ async function handleQueryFlow(from, text) {
         `Category: ${getCategoryName(state.category)}\n` +
         `Query: ${state.query}`
       );
-      // Then send confirmation buttons
       return sendConfirmationButtons(from);
 
     case 6:
-      // Waiting for user to tap confirm/cancel button
       return sendTextMessage(from, 'Please tap ✅ Yes or ❌ No to confirm or cancel.');
 
     default:
@@ -460,12 +531,13 @@ async function sendConfirmationButtons(to) {
   }
 }
 
+// ─── 10) finalizeQuerySubmission with DB insertion ───────────────────────────
 async function finalizeQuerySubmission(from) {
   const state   = userStates[from];
   const queryId = generateQueryId();
 
   try {
-    // 1) Insert into DB (assuming pool is defined elsewhere)
+    // 1) INSERT INTO queries
     const [insertResult] = await pool.query(
       `INSERT INTO queries 
          (full_name, address, email, category_id, description, query_id, status, created_at, updated_at)
@@ -481,7 +553,7 @@ async function finalizeQuerySubmission(from) {
     );
     const newQueryPK = insertResult.insertId;
 
-    // 2) Find staff for this category
+    // 2) Find staff for this category (join category_assignments → staff)
     const [staffRows] = await pool.query(
       `SELECT s.id, s.name, s.email 
        FROM staff s
@@ -491,9 +563,11 @@ async function finalizeQuerySubmission(from) {
     );
 
     if (!staffRows.length) {
+      // No staff assigned
       await sendTextMessage(from, `Query logged as ${queryId}, but no staff assigned yet.`);
     } else {
       const assignedStaff = staffRows[0];
+
       // 3) Update query with assigned staff
       await pool.query(
         `UPDATE queries
@@ -501,6 +575,7 @@ async function finalizeQuerySubmission(from) {
          WHERE id = ?`,
         [assignedStaff.id, newQueryPK]
       );
+
       // 4) Log activity
       await pool.query(
         `INSERT INTO query_activity
@@ -509,7 +584,7 @@ async function finalizeQuerySubmission(from) {
         [newQueryPK, assignedStaff.id]
       );
 
-      // 5) Send email to staff (assuming sendEmail is defined)
+      // 5) Send email to the assigned staff
       const htmlBody = `
         <p>Hello ${assignedStaff.name},</p>
         <p>A new query (<strong>${queryId}</strong>) has been assigned to you:</p>
@@ -538,7 +613,7 @@ async function finalizeQuerySubmission(from) {
   delete userStates[from];
 }
 
-// ─── 9) Complaint Flow (3 steps) ───────────────────────────────────────────
+// ─── 11) Complaint Flow (3 steps) ───────────────────────────────────────────
 async function handleComplaintFlow(from, text) {
   const state = userStates[from];
 
@@ -572,7 +647,7 @@ async function handleComplaintFlow(from, text) {
   }
 }
 
-// ─── 10) Suggestion Flow (3 steps) ─────────────────────────────────────────
+// ─── 12) Suggestion Flow (3 steps) ─────────────────────────────────────────
 async function handleSuggestionFlow(from, text) {
   const state = userStates[from];
 
@@ -606,19 +681,17 @@ async function handleSuggestionFlow(from, text) {
   }
 }
 
-// ─── 11) Billing Flow (3 steps + PDF) ──────────────────────────────────────
+// ─── 13) Billing Flow (3 steps + PDF) ──────────────────────────────────────
 async function handleBillingFlow(from, text) {
   const state = userStates[from];
 
   switch (state.step) {
     case 1:
-      // User sent account number
       state.account = text.trim();
       state.step = 2;
       return sendTextMessage(from, 'Please enter your portal password:');
 
     case 2:
-      // User sent password; attempt login and fetch bill
       state.password = text.trim();
       state.step = 3;
       await sendTextMessage(from, 'Fetching your bill details…');
@@ -657,27 +730,23 @@ async function handleBillingFlow(from, text) {
 
         // 2) Fetch bill data from API
         const billRes = await axios.get(PORTAL_API_URL, {
-          headers: { 
-            Cookie: state.cookieString, 
-            'User-Agent': 'Mozilla/5.0' 
-          },
+          headers: { Cookie: state.cookieString, 'User-Agent': 'Mozilla/5.0' },
           withCredentials: true,
           validateStatus: status => status >= 200 && status < 400
         });
 
         const bill = billRes.data;
         if (!bill?.account) {
-          // If the API didn't return an “account” field, show the raw response
           await sendTextMessage(from, '❌ Could not parse bill data: ' + JSON.stringify(bill, null, 2));
           delete userStates[from];
           return;
         }
 
-        // 3) Build a nicely formatted text reply
-        let replyText = `🏦 *BILL STATEMENT* 🏦\n\n`;
-        replyText += `Account: ${bill.account.number}\n`;
-        replyText += `Name: ${bill.account.name}\n`;
-        replyText += `Balance: USD ${bill.account.balance}\n\n`;
+        // 3) Build text reply
+        let replyText = `🏦 *BILL STATEMENT* 🏦\n\n` +
+                        `Account: ${bill.account.number}\n` +
+                        `Name: ${bill.account.name}\n` +
+                        `Balance: USD ${bill.account.balance}\n\n`;
 
         if (bill.account.last_payment && bill.account.last_payment_date) {
           replyText += `Last Payment: USD ${bill.account.last_payment} (${bill.account.last_payment_date})\n\n`;
@@ -693,16 +762,16 @@ async function handleBillingFlow(from, text) {
           replyText += `No recent transactions found.\n\n`;
         }
 
-        replyText += `💳 *PAYMENT METHODS* 💳\n`;
-        replyText += `1. Online: https://www.topup.co.zw/pay-bill/ruwa-local-board\n`;
-        replyText += `2. Bank Transfer:\n   ZB BANK\n   4136-00060989-207 ZWG\n   4136-00060989-405 USD\n`;
-        replyText += `3. Mobile Ecocash: *151*2*1*87208*Amount*StandNo#\n\n`;
-        replyText += `Need help? Call: 0242 132 988\n\n`;
-        replyText += `To get a PDF statement, reply “PDF”.\n`;
+        replyText += `💳 *PAYMENT METHODS* 💳\n` +
+                     `1. Online: https://www.topup.co.zw/pay-bill/ruwa-local-board\n` +
+                     `2. Bank Transfer:\n   ZB BANK\n   4136-00060989-207 ZWG\n   4136-00060989-405 USD\n` +
+                     `3. Mobile Ecocash: *151*2*1*87208*Amount*StandNo#\n\n` +
+                     `Need help? Call: 0242 132 988\n\n` +
+                     `To get a PDF statement, reply “PDF”.\n`;
 
         await sendTextMessage(from, replyText);
 
-        // 4) Prepare to handle “PDF” or “No” next
+        // 4) Prompt for PDF or menu
         state.step = 4;
         return sendTextMessage(from, 'Type “PDF” to receive your PDF statement, or type “menu” to go back.');
 
@@ -714,20 +783,16 @@ async function handleBillingFlow(from, text) {
       return;
 
     case 4:
-      // Expecting either “PDF” or “menu” (or cancellation)
       const lower = text.trim().toLowerCase();
       if (lower === 'pdf') {
-        // Construct the PDF URL and send it as a message
         const pdfUrl = `${PDF_STATEMENT_URL_BASE}${state.account}`;
-        await sendTextMessage(from, `Here is your PDF statement:\n${pdfUrl}`);
+        return sendTextMessage(from, `Here is your PDF statement:\n${pdfUrl}`);
       } else if (lower === 'menu') {
         delete userStates[from];
-        await sendMainMenu(from);
+        return sendMainMenu(from);
       } else {
-        // Unrecognized; reprompt
-        await sendTextMessage(from, 'Please type “PDF” to receive the statement, or “menu” to go back.');
+        return sendTextMessage(from, 'Please type “PDF” to receive the statement, or “menu” to go back.');
       }
-      return;
 
     default:
       return sendTextMessage(from, 'An error occurred. Type “cancel” to restart.');
