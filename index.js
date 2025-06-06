@@ -4,7 +4,7 @@ require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
-
+const userStates = {};  
 // ─── Environment Variables ─────────────────────────────────────────────────
 const PORT             = process.env.PORT || 3000;
 const TOKEN            = process.env.TOKEN;            // Your Business API access token
@@ -165,6 +165,7 @@ async function sendMainMenu(to) {
   const payload = {
     messaging_product: 'whatsapp',
     to,
+    type: 'interactive',           // <— add this
     interactive: {
       type: 'list',
       header: { type: 'text', text: 'Ruwa Local Board Services' },
@@ -205,12 +206,12 @@ async function sendMainMenu(to) {
     console.error('❌ Error sending main menu:', err.response?.data || err.message);
   }
 }
-
 // ─── 6) Send Customer Relations Sub‐Menu ────────────────────────────────────
 async function sendCustomerRelationsMenu(to) {
   const payload = {
     messaging_product: 'whatsapp',
     to,
+    type: 'interactive',           // <— add this
     interactive: {
       type: 'list',
       header: { type: 'text', text: 'Customer Relations' },
@@ -250,7 +251,6 @@ async function sendCustomerRelationsMenu(to) {
     console.error('❌ Error sending customer menu:', err.response?.data || err.message);
   }
 }
-
 // ─── 7) In‐Memory State for Each User ────────────────────────────────────────
 /**
  * Structure:
