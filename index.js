@@ -586,57 +586,42 @@ async function finalizeQuerySubmission(from) {
   const state   = userStates[from];
   const queryId = generateQueryId();
 
+  // Build the JSON payload exactly as db-api.php expects
+  const payload = {
+    full_name:   state.fullName,       // e.g. "John Smith"
+    address:     state.address,        // e.g. "45 Elm Ave"
+    email:       state.email,          // e.g. "john@example.com"
+    category_id: state.category,       // e.g. 3
+    description: state.query,          // e.g. "I need a development permit."
+    query_id:    queryId               // e.g. "QR12345W"
+  };
+
   try {
-    // 1) INSERT INTO queries
-    const [insertResult] = await pool.query(
-      `INSERT INTO queries 
-         (full_name, address, email, category_id, description, query_id, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'OPEN', NOW(), NOW())`,
-      [
-        state.fullName,
-        state.address,
-        state.email,
-        state.category,
-        state.query,
-        queryId
-      ]
-    );
-    const newQueryPK = insertResult.insertId;
-
-    // 2) Find staff for this category (join category_assignments → staff)
-    const [staffRows] = await pool.query(
-      `SELECT s.id, s.name, s.email 
-       FROM staff s
-       JOIN category_assignments ca ON ca.staff_id = s.id
-       WHERE ca.category_id = ?`,
-      [state.category]
+    // Replace yourdomain.com with your actual domain
+    const apiRes = await axios.post(
+      'https://portal.ruwalocalboard.co.zw./db-api.php',
+      payload,
+      {
+        headers: { 'Content-Type': 'application/json' }
+      }
     );
 
-    if (!staffRows.length) {
-      // No staff assigned
-      await sendTextMessage(from, `Query logged as ${queryId}, but no staff assigned yet.`);
-    } else {
-      const assignedStaff = staffRows[0];
+    const data = apiRes.data;
+    if (!data.success) {
+      console.error('PHP API returned error:', data);
+      await sendTextMessage(from, '⚠️ Could not log your query. Please try again later.');
+      delete userStates[from];
+      return;
+    }
 
-      // 3) Update query with assigned staff
-      await pool.query(
-        `UPDATE queries
-           SET assigned_to = ?, status = 'ASSIGNED', updated_at = NOW()
-         WHERE id = ?`,
-        [assignedStaff.id, newQueryPK]
-      );
+    // If assigned === true, send email & reply accordingly
+    if (data.assigned) {
+      const staffName  = data.assigned_name;   // string
+      const staffEmail = data.assigned_email;  // string
 
-      // 4) Log activity
-      await pool.query(
-        `INSERT INTO query_activity
-           (query_id, action, performed_by, created_at)
-         VALUES (?, 'ASSIGNED', ?, NOW())`,
-        [newQueryPK, assignedStaff.id]
-      );
-
-      // 5) Send email to the assigned staff
+      // 1) Send email to staff
       const htmlBody = `
-        <p>Hello ${assignedStaff.name},</p>
+        <p>Hello ${staffName},</p>
         <p>A new query (<strong>${queryId}</strong>) has been assigned to you:</p>
         <ul>
           <li>Category: ${getCategoryName(state.category)}</li>
@@ -645,24 +630,31 @@ async function finalizeQuerySubmission(from) {
           <li>Query: ${state.query}</li>
         </ul>
         <p>Please <a href="https://portal.ruwalocalboard.co.zw/queries.php">log in to the portal</a> to update its status.</p>
-        <p>Thank you.</p>`;
-      await sendEmail(assignedStaff.email, `New Query Assigned: ${queryId}`, htmlBody);
+        <p>Thank you.</p>
+      `;
+      await sendEmail(staffEmail, `New Query Assigned: ${queryId}`, htmlBody);
 
-      // 6) Reply back to user on WhatsApp
+      // 2) Reply to the user on WhatsApp
       await sendTextMessage(
         from,
         `✅ Query Successfully Logged\nYour Query ID is *${queryId}*.\n\n` +
-        `It has been assigned to ${assignedStaff.name}. They will reach out soon.`
+        `It has been assigned to *${staffName}*. They will reach out soon.`
+      );
+    } else {
+      // No staff was assigned
+      await sendTextMessage(
+        from,
+        `✅ Query Logged with ID *${queryId}*.\n` +
+        `Currently no staff is assigned to this category. We will update you when someone is assigned.`
       );
     }
   } catch (err) {
-    console.error('❌ DB error saving query:', err);
+    console.error('Error calling PHP API:', err.response?.data || err.message);
     await sendTextMessage(from, '⚠️ System error. Please try again later.');
   }
 
   delete userStates[from];
 }
-
 // ─── 11) Complaint Flow (3 steps) ───────────────────────────────────────────
 async function handleComplaintFlow(from, text) {
   const state = userStates[from];
