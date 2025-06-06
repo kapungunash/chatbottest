@@ -328,7 +328,10 @@ async function sendMainMenu(to) {
     interactive: {
       type: 'list',
       header: { type: 'text', text: 'Ruwa Local Board Services' },
-      body:   { text: 'How can we help you today?' },
+      body: {
+        text: 'Hi there! 👋 I’m Ruvimbo, your virtual assistant at Ruwa Local Board. Need help with bills, services, or local info? I’ve got you covered!'
+      },
+      
       footer: { text: '' },
       action: {
         button: 'Choose an option',
