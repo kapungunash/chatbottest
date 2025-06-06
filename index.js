@@ -28,7 +28,7 @@ const WH_API_BASE = `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/message
 // ─── MySQL Pool Configuration ────────────────────────────────────────────────
 // Using your hosting server’s credentials and remote host
 const pool = mysql.createPool({
-  host: 'vkglobalhost.co.uk',   // Public hostname for MySQL
+  host: '173.249.32.141',   // Public hostname for MySQL
   port: 3306,                   // MariaDB default port
   user: 'portaladmin',
   password: 'panashe@03',
