@@ -276,17 +276,25 @@ async function handleInteractiveReply(from, replyId) {
       return sendTextMessage(from, 'Okay! If you need anything else, type “menu.”');
 
     // ─── Category Selection from sendCategoryList ──────────────────────────
-    default:
-      {
-        const num = parseInt(replyId, 10);
-        if (!isNaN(num) && num >= 1 && num <= 15 && userStates[from]?.step === 4) {
-          userStates[from].category = num;
-          userStates[from].step = 5;
-          return sendTextMessage(from, 'Step 5/5: Enter your query description:');
-        }
-        // Otherwise, unknown interactive ID
-        return sendTextMessage(from, 'Sorry, I didn’t understand that choice. Type “menu” to start over.');
+    default: {
+      const num = parseInt(replyId, 10);
+      if (!isNaN(num) && num >= 1 && num <= 15 && userStates[from]?.step === 4) {
+        userStates[from].category = num;
+        userStates[from].step = 5;
+        return sendTextMessage(from, 'Step 5/5: Enter your query description:');
       }
+      return sendTextMessage(from, 'Sorry, I didn’t understand that choice. Type “menu” to start over.');
+    }
+
+      case 'more':
+        if (userStates[from]?.step === 4) {
+          return sendMoreCategories(from);
+        } else {
+          return sendTextMessage(from, 'Please follow the menu. Type “menu” to start over.');
+        }
+        
+
+
   }
 }
 
@@ -409,7 +417,8 @@ async function sendCategoryList(to) {
   // Build rows for categories 1–9
   const rows = [];
   for (let i = 1; i <= 9; i++) {
-    rows.push({ id: String(i), title: getCategoryName(i) });
+    const title = truncate24(getCategoryName(i));
+    rows.push({ id: String(i), title });
   }
 
   // Add a “More categories” row
@@ -452,7 +461,8 @@ async function sendCategoryList(to) {
 async function sendMoreCategories(to) {
   const rows = [];
   for (let i = 10; i <= 15; i++) {
-    rows.push({ id: String(i), title: getCategoryName(i) });
+    const title = truncate24(getCategoryName(i));
+    rows.push({ id: String(i), title });
   }
 
   const payload = {
@@ -865,6 +875,11 @@ function getCategoryName(num) {
     'Transport Management'
   ];
   return categories[num - 1] || 'Unknown';
+}
+
+// ─── Utility: Truncate a string to 24 chars ─────────────────────────────────
+function truncate24(str) {
+  return str.length > 24 ? str.slice(0, 24) : str;
 }
 
 function logComplaint(complaint) {
