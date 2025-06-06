@@ -1,9 +1,20 @@
 // index.js
 
 require('dotenv').config();
+
+
+
+const qs = require('querystring'); 
+
+const PORTAL_LOGIN_URL       = 'https://portal.ruwalocalboard.co.zw/data/login2.php';
+const PORTAL_API_URL         = 'https://portal.ruwalocalboard.co.zw/api.php';
+const PDF_STATEMENT_URL_BASE = 'https://portal.ruwalocalboard.co.zw/stat/statement.php?id=';
+
+
 const express    = require('express');
 const bodyParser = require('body-parser');
 const axios      = require('axios');
+
 
 // ─── In-memory state ───────────────────────────────────────────────────────────
 const userStates = {};  
@@ -601,19 +612,21 @@ async function handleBillingFlow(from, text) {
 
   switch (state.step) {
     case 1:
+      // User sent account number
       state.account = text.trim();
       state.step = 2;
       return sendTextMessage(from, 'Please enter your portal password:');
 
     case 2:
+      // User sent password; attempt login and fetch bill
       state.password = text.trim();
       state.step = 3;
       await sendTextMessage(from, 'Fetching your bill details…');
 
       try {
-        // 1) Login
+        // 1) Login to portal
         const loginRes = await axios.post(
-          'https://portal.ruwalocalboard.co.zw/data/login2.php',
+          PORTAL_LOGIN_URL,
           qs.stringify({ username: state.account, password: state.password }),
           {
             headers: {
@@ -625,12 +638,15 @@ async function handleBillingFlow(from, text) {
             validateStatus: status => status >= 200 && status < 400
           }
         );
+
         if (!loginRes.data?.success) {
           const errMsg = loginRes.data?.error || 'Invalid username or password.';
           await sendTextMessage(from, `❌ Login failed: ${errMsg}`);
           delete userStates[from];
           return;
         }
+
+        // Extract session cookies
         const cookies = loginRes.headers['set-cookie'];
         if (!Array.isArray(cookies) || !cookies.length) {
           await sendTextMessage(from, '❌ Login succeeded but no session cookie was returned.');
@@ -639,24 +655,29 @@ async function handleBillingFlow(from, text) {
         }
         state.cookieString = cookies.map(c => c.split(';')[0]).join('; ');
 
-        // 2) Fetch bill data
-        const billRes = await axios.get('https://portal.ruwalocalboard.co.zw/api.php', {
-          headers: { Cookie: state.cookieString, 'User-Agent': 'Mozilla/5.0' },
+        // 2) Fetch bill data from API
+        const billRes = await axios.get(PORTAL_API_URL, {
+          headers: { 
+            Cookie: state.cookieString, 
+            'User-Agent': 'Mozilla/5.0' 
+          },
           withCredentials: true,
           validateStatus: status => status >= 200 && status < 400
         });
+
         const bill = billRes.data;
         if (!bill?.account) {
+          // If the API didn't return an “account” field, show the raw response
           await sendTextMessage(from, '❌ Could not parse bill data: ' + JSON.stringify(bill, null, 2));
           delete userStates[from];
           return;
         }
 
-        // 3) Build text reply
-        let replyText = `🏦 *BILL STATEMENT* 🏦\n\n` +
-                        `Account: ${bill.account.number}\n` +
-                        `Name: ${bill.account.name}\n` +
-                        `Balance: USD ${bill.account.balance}\n\n`;
+        // 3) Build a nicely formatted text reply
+        let replyText = `🏦 *BILL STATEMENT* 🏦\n\n`;
+        replyText += `Account: ${bill.account.number}\n`;
+        replyText += `Name: ${bill.account.name}\n`;
+        replyText += `Balance: USD ${bill.account.balance}\n\n`;
 
         if (bill.account.last_payment && bill.account.last_payment_date) {
           replyText += `Last Payment: USD ${bill.account.last_payment} (${bill.account.last_payment_date})\n\n`;
@@ -672,40 +693,19 @@ async function handleBillingFlow(from, text) {
           replyText += `No recent transactions found.\n\n`;
         }
 
-        replyText += `💳 *PAYMENT METHODS* 💳\n` +
-                     `1. Online: https://www.topup.co.zw/pay-bill/ruwa-local-board\n` +
-                     `2. Bank Transfer:\n   ZB BANK\n   4136-00060989-207 ZWG\n   4136-00060989-405 USD\n` +
-                     `3. Mobile Ecocash: *151*2*1*87208*Amount*StandNo#\n\n` +
-                     `Need help? Call: 0242 132 988\n\n` +
-                     `View full statement: https://portal.ruwalocalboard.co.zw`;
+        replyText += `💳 *PAYMENT METHODS* 💳\n`;
+        replyText += `1. Online: https://www.topup.co.zw/pay-bill/ruwa-local-board\n`;
+        replyText += `2. Bank Transfer:\n   ZB BANK\n   4136-00060989-207 ZWG\n   4136-00060989-405 USD\n`;
+        replyText += `3. Mobile Ecocash: *151*2*1*87208*Amount*StandNo#\n\n`;
+        replyText += `Need help? Call: 0242 132 988\n\n`;
+        replyText += `To get a PDF statement, reply “PDF”.\n`;
 
         await sendTextMessage(from, replyText);
 
-        // 4) Show PDF Yes/No buttons
+        // 4) Prepare to handle “PDF” or “No” next
         state.step = 4;
-        const PDF_BUTTONS = {
-          messaging_product: 'whatsapp',
-          to: from,
-          type: 'interactive',
-          interactive: {
-            type: 'button',
-            body: { text: 'Would you like your PDF statement?' },
-            footer: { text: '' },
-            action: {
-              buttons: [
-                { type: 'reply', reply: { id: 'pdf_yes', title: 'Yes, send PDF' } },
-                { type: 'reply', reply: { id: 'pdf_no',  title: 'No thanks' } }
-              ]
-            }
-          }
-        };
-        await axios.post(WH_API_BASE, PDF_BUTTONS, {
-          headers: {
-            Authorization: `Bearer ${TOKEN}`,
-            'Content-Type': 'application/json'
-          }
-        });
-        console.log(`✅ Sent PDF buttons to ${from}`);
+        return sendTextMessage(from, 'Type “PDF” to receive your PDF statement, or type “menu” to go back.');
+
       } catch (err) {
         console.error('❌ Billing error:', err);
         await sendTextMessage(from, '⚠️ Error fetching bill details. Please try again later.');
@@ -714,8 +714,20 @@ async function handleBillingFlow(from, text) {
       return;
 
     case 4:
-      // Waiting for user to tap “pdf_yes” or “pdf_no”
-      return sendTextMessage(from, 'Please tap one of the buttons to continue.');
+      // Expecting either “PDF” or “menu” (or cancellation)
+      const lower = text.trim().toLowerCase();
+      if (lower === 'pdf') {
+        // Construct the PDF URL and send it as a message
+        const pdfUrl = `${PDF_STATEMENT_URL_BASE}${state.account}`;
+        await sendTextMessage(from, `Here is your PDF statement:\n${pdfUrl}`);
+      } else if (lower === 'menu') {
+        delete userStates[from];
+        await sendMainMenu(from);
+      } else {
+        // Unrecognized; reprompt
+        await sendTextMessage(from, 'Please type “PDF” to receive the statement, or “menu” to go back.');
+      }
+      return;
 
     default:
       return sendTextMessage(from, 'An error occurred. Type “cancel” to restart.');
