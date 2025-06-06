@@ -406,40 +406,35 @@ async function sendCustomerRelationsMenu(to) {
 
 // ─── 8) Send Category List for Queries ──────────────────────────────────────
 async function sendCategoryList(to) {
+  // Build rows for categories 1–9
   const rows = [];
-  for (let i = 1; i <= 15; i++) {
-    rows.push({
-      id: String(i),
-      title: getCategoryName(i)
-    });
+  for (let i = 1; i <= 9; i++) {
+    rows.push({ id: String(i), title: getCategoryName(i) });
   }
 
- // Split into two sections:
- const sectionA = {
-  title: 'Categories 1–10',
-  rows: rows.slice(0, 10)   // rows 0 through 9 (IDs "1"–"10")
-};
+  // Add a “More categories” row
+  rows.push({ id: 'more', title: '➕ More categories' });
 
-const sectionB = {
-  title: 'Categories 11–15',
-  rows: rows.slice(10, 15)  // rows 10 through 14 (IDs "11"–"15")
-};
-
-const payload = {
-  messaging_product: 'whatsapp',
-  to,
-  type: 'interactive',
-  interactive: {
-    type: 'list',
-    header: { type: 'text', text: 'Choose a Category' },
-    body:   { text: 'Step 4/5: Select one category from the list below.' },
-    footer: { text: '' },
-    action: {
-      button: 'Select Category',
-      sections: [sectionA, sectionB]
+  const payload = {
+    messaging_product: 'whatsapp',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      header: { type: 'text', text: 'Choose a Category (1–9)' },
+      body:   { text: 'Step 4/5: Select one category or tap “More categories”.' },
+      footer: { text: '' },
+      action: {
+        button: 'Select Category',
+        sections: [
+          {
+            title: 'Categories (1–9)',
+            rows // exactly 10 rows: nine categories + “More categories”
+          }
+        ]
+      }
     }
-  }
-};
+  };
 
   try {
     await axios.post(WH_API_BASE, payload, {
@@ -448,12 +443,51 @@ const payload = {
         'Content-Type': 'application/json'
       }
     });
-    console.log(`✅ Sent category list to ${to}`);
+    console.log(`✅ Sent first-phase category list to ${to}`);
   } catch (err) {
-    console.error('❌ Error sending category list:', err.response?.data || err.message);
+    console.error('❌ Error sending first-phase category list:', err.response?.data || err.message);
   }
 }
 
+async function sendMoreCategories(to) {
+  const rows = [];
+  for (let i = 10; i <= 15; i++) {
+    rows.push({ id: String(i), title: getCategoryName(i) });
+  }
+
+  const payload = {
+    messaging_product: 'whatsapp',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      header: { type: 'text', text: 'More Categories (10–15)' },
+      body:   { text: 'Step 4/5: Select one category from 10–15.' },
+      footer: { text: '' },
+      action: {
+        button: 'Select Category',
+        sections: [
+          {
+            title: 'Categories (10–15)',
+            rows // exactly 6 rows
+          }
+        ]
+      }
+    }
+  };
+
+  try {
+    await axios.post(WH_API_BASE, payload, {
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    console.log(`✅ Sent second-phase category list to ${to}`);
+  } catch (err) {
+    console.error('❌ Error sending second-phase category list:', err.response?.data || err.message);
+  }
+}
 // ─── 9) Query Flow (5 steps + confirmation) ─────────────────────────────────
 async function handleQueryFlow(from, text) {
   const state = userStates[from];
