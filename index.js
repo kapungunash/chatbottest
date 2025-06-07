@@ -596,7 +596,8 @@ async function finalizeQuerySubmission(from) {
     email:       state.email,          // e.g. "john@example.com"
     category_id: state.category,       // e.g. 3
     description: state.query,          // e.g. "I need a development permit."
-    query_id:    queryId               // e.g. "QR12345W"
+    query_id:    queryId,               // e.g."QR12345W"
+    client_whatsapp: from  
   };
 
   try {
@@ -620,21 +621,23 @@ async function finalizeQuerySubmission(from) {
     // If assigned === true, send email & reply accordingly
     if (data.assigned) {
       const staffName  = data.assigned_name;   // string
-      const staffEmail = data.assigned_email;  // string
+      const staffEmail = data.assigned_email; 
+      const staffNumber = data.assigned_number; // string
 
       // 1) Send email to staff
       const htmlBody = `
-        <p>Hello ${staffName},</p>
-        <p>A new query (<strong>${queryId}</strong>) has been assigned to you:</p>
-        <ul>
-          <li>Category: ${getCategoryName(state.category)}</li>
-          <li>From: ${state.fullName} (${state.email})</li>
-          <li>Address: ${state.address}</li>
-          <li>Query: ${state.query}</li>
-        </ul>
-        <p>Please <a href="https://portal.ruwalocalboard.co.zw/queries.php">log in to the portal</a> to update its status.</p>
-        <p>Thank you.</p>
-      `;
+      <p>Hello ${staffName},</p>
+      <p>A new query (<strong>${queryId}</strong>) has been assigned to you:</p>
+      <ul>
+        <li>Category: ${getCategoryName(state.category)}</li>
+        <li>From: ${state.fullName} (${state.email})</li>
+        <li><strong>Client WhatsApp:</strong> ${from}</li>
+        <li>Address: ${state.address}</li>
+        <li>Query: ${state.query}</li>
+      </ul>
+      <p>Please log in to the portal to update its status.</p>
+      <p>Thank you.</p>
+    `;
       await sendEmail(staffEmail, `New Query Assigned: ${queryId}`, htmlBody);
 
       // 2) Reply to the user on WhatsApp
@@ -643,6 +646,21 @@ async function finalizeQuerySubmission(from) {
         `✅ Query Successfully Logged\nYour Query ID is *${queryId}*.\n\n` +
         `It has been assigned to *${staffName}*. They will reach out soon.`
       );
+
+      await sendTextMessage(
+        staffNumber,
+        `📬 New query *${queryId}* assigned to you:\n` +
+        `• Category: ${getCategoryName(state.category)}\n` +
+        `• From: ${state.fullName} (${state.email})\n` +
+        `• Client WhatsApp: ${from}\n` +
+        `• Address: ${state.address}\n` +
+        `• Query: ${state.query}\n\n` +
+        `Please log in to the portal to update its status.`
+      );
+
+
+
+
     } else {
       // No staff was assigned
       await sendTextMessage(
